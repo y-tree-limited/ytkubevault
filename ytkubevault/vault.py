@@ -134,7 +134,7 @@ def encrypt_or_default(plaintext: str, encrypt_key: str, default: Optional[Calla
 
 
 def decrypt_or_default(ciphertext: str, decrypt_key: str, default: Optional[Callable[[str], str]] = None) -> str:
-    """Encrypt text with Vault Transit Secret Engine.
+    """Decrypt text with Vault Transit Secret Engine.
 
     :param ciphertext: The text to be decrypted
     :param decrypt_key: The decryption key defined in Vault
