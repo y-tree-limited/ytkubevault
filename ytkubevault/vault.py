@@ -49,7 +49,9 @@ def _initialise_if_needed():
         if VAULT_ENABLED:
             global _VAULT_SECRETS
 
-            if _VAULT_SECRETS is None:
+            _vault_login()
+
+            if _VAULT_SECRETS is None and VAULT_SECRETS_PATH is not None:
                 _VAULT_SECRETS = _get_all_vault_secrets(
                     client=_vault_login(),
                     path=VAULT_SECRETS_PATH,
