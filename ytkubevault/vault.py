@@ -1,8 +1,10 @@
+import base64
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import hvac
+from hvac import api
 
 VAULT_ENABLED: bool = os.getenv("VAULT_ENABLED", default="false").strip().lower() == "true"
 VAULT_ROLE: Optional[str] = os.getenv("VAULT_ROLE", default=None)
@@ -10,6 +12,7 @@ VAULT_URL: Optional[str] = os.getenv("VAULT_URL", default=None)
 VAULT_SECRETS_PATH: Optional[str] = os.getenv("VAULT_SECRETS_PATH", default=None)
 
 _VAULT_SECRETS = None
+_client = None
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +22,17 @@ class VaultException(Exception):
 
 
 def _vault_login():
+    global _client
+    if _client:
+        return _client
     try:
         with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as f:
             jwt = f.read()
-        client = hvac.Client(url=VAULT_URL)
-        client.auth_kubernetes(role=VAULT_ROLE, jwt=jwt)
+        _client = hvac.Client(url=VAULT_URL)
+        _client.token = api.auth_methods.Kubernetes(adapter=_client.adapter).login(role=VAULT_ROLE,
+                                                                                   jwt=jwt)["auth"]["client_token"]
 
-        return client
+        return _client
 
     except Exception as e:
         raise VaultException(f"Failed to log into the vault:  {e}", e)
@@ -104,6 +111,45 @@ def get_vault_secret_keys() -> list[str]:
         return list(vault["data"]["data"].keys())
     except Exception:
         return []
+
+
+def encrypt_or_default(plaintext: str, encrypt_key: str, default: Optional[Callable[[str], str]] = None) -> str:
+    """Encrypt text with Vault Transit Secret Engine.
+
+    :param plaintext: The text to be encrypted
+    :param encrypt_key: The encryption key defined in Vault
+    :param default: The default encrypter function to be called if Vault is not enabled. If `None` is provided,
+    then the encrypter is the identity function.
+    """
+    global _client
+    if not _client:
+        encrypter = default if default else lambda x: x
+        return encrypter(plaintext)
+    encoded_text = base64.b64encode(plaintext.encode("utf-8"))
+    try:
+        ciphertext = _client.secrets.transit.encrypt_data(name=encrypt_key, plaintext=str(encoded_text, "utf-8"))
+    except Exception as e:
+        raise VaultException(f"Failed to encrypt data: {e}", e)
+    return ciphertext["data"]["ciphertext"]
+
+
+def decrypt_or_default(ciphertext: str, decrypt_key: str, default: Optional[Callable[[str], str]] = None) -> str:
+    """Decrypt text with Vault Transit Secret Engine.
+
+    :param ciphertext: The text to be decrypted
+    :param decrypt_key: The decryption key defined in Vault
+    :param default: The default decrypter function to be called if Vault is not enabled. If `None` is provided,
+    then the decrypter is the identity function.
+    """
+    global _client
+    if not _client:
+        decrypter = default if default else lambda x: x
+        return decrypter(ciphertext)
+    try:
+        decrypt_data_response = _client.secrets.transit.decrypt_data(name=decrypt_key, ciphertext=ciphertext)
+    except Exception as e:
+        raise VaultException(f"Failed to decrypt data: {e}", e)
+    return str(base64.b64decode(decrypt_data_response["data"]["plaintext"]), "utf-8")
 
 
 # Execute the first time this file is imported
