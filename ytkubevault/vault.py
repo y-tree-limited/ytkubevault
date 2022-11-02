@@ -152,6 +152,22 @@ def decrypt_or_default(ciphertext: str, decrypt_key: str, default: Optional[Call
     return str(base64.b64decode(decrypt_data_response["data"]["plaintext"]), "utf-8")
 
 
+def create_or_update_secret(key: str, secret: str):
+    """Create or update a secret in vault
+
+    :param key: The secret key
+    :param secret: The secret value, the secret itself
+    """
+    global _client
+    if _client:
+        try:
+            _client.secrets.kv.v2.create_or_update_secret(
+                path=key,
+                secret=secret)
+        except Exception as e:
+            raise VaultException(f"Failed to update secret: {e}", e)
+
+
 # Execute the first time this file is imported
 # If initialisation fails, it will fail immediately
 _initialise_if_needed()
