@@ -36,3 +36,35 @@ from ytkubevault import get_secret_or_env
 
 db_password = get_secret_or_env("DATABASE_PASSWORD")
 ```
+
+Since Version 0.2.0, a `VaultClient` is added, and you can explicitly create 
+such a client:
+```python
+from ytkubevault import VaultClient
+
+vault_client = VaultClient()
+# login first
+try:
+    vault_client.login()
+except Exception as e:
+    print(f"Failed to login: {e}")
+
+# Then you can do encryption, for example:
+vault_client.encrypt(encrypt_key="some_key", plaintext="my_secret_message")
+```
+
+The old functions now use an implicitly created global `VaultClient`. Note that 
+`VaultClient` is not multithread-safe.
+
+## Fetching secrets from outside the cluster
+To be able to fetch secrets from outside the Kubernetes cluster, you need to install 
+the package with
+```shell
+pip install 'ytkubevault[dev]'
+```
+This will also install `kubernetes` package, which allows us to get the service account
+token. Additionally, 4 environment variables need to be set:
+* VAULT_DEV_REMOTE_MODE: this needs to be `true`, which is `false` by default
+* VAULT_DEV_REMOTE_CLUSTER: the cluster string you want to connect to
+* VAULT_DEV_REMOTE_NAMESPACE: the namespace the service is in
+* VAULT_DEV_REMOTE_SERVICE_ACCOUNT: the service account name of the service
