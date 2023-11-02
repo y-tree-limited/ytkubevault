@@ -7,7 +7,9 @@ from typing import Any, Callable, Optional, Union
 
 import hvac
 from hvac import api
-from hvac.api.auth_methods.kubernetes import DEFAULT_MOUNT_POINT
+from hvac.api.auth_methods.kubernetes import DEFAULT_MOUNT_POINT as LOGIN_DEFAULT_MOUNT_POINT
+from hvac.api.secrets_engines.kv_v2 import DEFAULT_MOUNT_POINT as SECRET_DEFAULT_MOUNT_POINT
+from hvac.api.secrets_engines.transit import DEFAULT_MOUNT_POINT as TRANSIT_DEFAULT_MOUNT_POINT
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +23,9 @@ VAULT_ENABLED: bool = os.getenv("VAULT_ENABLED", default="false").strip().lower(
 VAULT_ROLE: Optional[str] = os.getenv("VAULT_ROLE", default=None)
 VAULT_URL: Optional[str] = os.getenv("VAULT_URL", default=None)
 VAULT_SECRETS_PATH: Optional[str] = os.getenv("VAULT_SECRETS_PATH", default=None)
-VAULT_MOUNT_POINT: str = os.getenv("VAULT_MOUNT_POINT", default=DEFAULT_MOUNT_POINT)
+VAULT_LOGIN_MOUNT_POINT: str = os.getenv("VAULT_LOGIN_MOUNT_POINT", default=LOGIN_DEFAULT_MOUNT_POINT)
+VAULT_SECRET_MOUNT_POINT: str = os.getenv("VAULT_SECRET_MOUNT_POINT", default=SECRET_DEFAULT_MOUNT_POINT)
+VAULT_TRANSIT_MOUNT_POINT: str = os.getenv("VAULT_TRANSIT_MOUNT_POINT", default=TRANSIT_DEFAULT_MOUNT_POINT)
 
 # Development from outside the cluster
 VAULT_DEV_REMOTE_MODE: bool = os.getenv("VAULT_DEV_REMOTE_MODE", default="false").strip().lower() == "true"
@@ -44,7 +48,9 @@ def _re_login_if_token_about_to_expire(method):
 
 class VaultClient:
     def __init__(self, vault_url: str = VAULT_URL, role: str = VAULT_ROLE, token_expire_buffer_period_min: int = 10,
-                 mount_point: str = VAULT_MOUNT_POINT):
+                 login_mount_point: str = VAULT_LOGIN_MOUNT_POINT,
+                 secret_mount_point: str = VAULT_SECRET_MOUNT_POINT,
+                 transit_mount_point: str = VAULT_TRANSIT_MOUNT_POINT):
         self._client = hvac.Client(url=vault_url)
         self._role = role
         self._last_login_time = None
@@ -52,7 +58,9 @@ class VaultClient:
         self._token_expires_at = None
         self._service_account_token = None
         self._token_expire_buffer_period_min = token_expire_buffer_period_min    # minutes
-        self._mount_point = mount_point
+        self._login_mount_point = login_mount_point
+        self._secret_mount_point = secret_mount_point
+        self._transit_mount_point = transit_mount_point
 
     def _read_service_account_token(self) -> None:
         with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as f:
@@ -78,7 +86,7 @@ class VaultClient:
                 self._read_service_account_token()
         auth_data = api.auth_methods.Kubernetes(
             adapter=self._client.adapter
-        ).login(role=self._role, jwt=self._service_account_token, mount_point=self._mount_point)["auth"]
+        ).login(role=self._role, jwt=self._service_account_token, mount_point=self._login_mount_point)["auth"]
         self._last_login_time = datetime.datetime.now(tz=datetime.timezone.utc)
         self._lease_duration = auth_data["lease_duration"]
         self._token_expires_at = self._last_login_time + datetime.timedelta(seconds=self._lease_duration)
@@ -89,7 +97,7 @@ class VaultClient:
                             version: Optional[int] = None,
                             mount_point: Optional[str] = None,
                             **kwargs) -> dict:
-        _mount_point = mount_point if mount_point else self._mount_point
+        _mount_point = mount_point if mount_point else self._secret_mount_point
         return self._client.secrets.kv.v2.read_secret_version(path, version, mount_point=_mount_point, **kwargs)
 
     @_re_login_if_token_about_to_expire
@@ -97,7 +105,7 @@ class VaultClient:
                                  secrets: dict[str, str],
                                  mount_point: Optional[str] = None,
                                  **kwargs) -> None:
-        _mount_point = mount_point if mount_point else self._mount_point
+        _mount_point = mount_point if mount_point else self._secret_mount_point
         self._client.secrets.kv.v2.create_or_update_secret(path=path,
                                                            secret=secrets,
                                                            mount_point=_mount_point,
@@ -105,7 +113,7 @@ class VaultClient:
 
     @_re_login_if_token_about_to_expire
     def encrypt(self, encrypt_key: str, plaintext: str, mount_point: Optional[str] = None) -> str:
-        _mount_point = mount_point if mount_point else self._mount_point
+        _mount_point = mount_point if mount_point else self._transit_mount_point
         try:
             ciphertext = self._client.secrets.transit.encrypt_data(name=encrypt_key,
                                                                    plaintext=plaintext,
@@ -116,7 +124,7 @@ class VaultClient:
 
     @_re_login_if_token_about_to_expire
     def decrypt(self, decrypt_key: str, ciphertext: str, mount_point: Optional[str] = None) -> str:
-        _mount_point = mount_point if mount_point else self._mount_point
+        _mount_point = mount_point if mount_point else self._transit_mount_point
         try:
             decrypt_data_response = self._client.secrets.transit.decrypt_data(name=decrypt_key,
                                                                               ciphertext=ciphertext,
