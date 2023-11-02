@@ -7,6 +7,7 @@ from typing import Any, Callable, Optional, Union
 
 import hvac
 from hvac import api
+from hvac.api.auth_methods.kubernetes import DEFAULT_MOUNT_POINT
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ VAULT_ENABLED: bool = os.getenv("VAULT_ENABLED", default="false").strip().lower(
 VAULT_ROLE: Optional[str] = os.getenv("VAULT_ROLE", default=None)
 VAULT_URL: Optional[str] = os.getenv("VAULT_URL", default=None)
 VAULT_SECRETS_PATH: Optional[str] = os.getenv("VAULT_SECRETS_PATH", default=None)
+VAULT_MOUNT_POINT: str = os.getenv("VAULT_MOUNT_POINT", default=DEFAULT_MOUNT_POINT)
 
 # Development from outside the cluster
 VAULT_DEV_REMOTE_MODE: bool = os.getenv("VAULT_DEV_REMOTE_MODE", default="false").strip().lower() == "true"
@@ -41,7 +43,8 @@ def _re_login_if_token_about_to_expire(method):
 
 
 class VaultClient:
-    def __init__(self, vault_url: str = VAULT_URL, role: str = VAULT_ROLE, token_expire_buffer_period_min: int = 10):
+    def __init__(self, vault_url: str = VAULT_URL, role: str = VAULT_ROLE, token_expire_buffer_period_min: int = 10,
+                 mount_point: str = VAULT_MOUNT_POINT):
         self._client = hvac.Client(url=vault_url)
         self._role = role
         self._last_login_time = None
@@ -49,6 +52,7 @@ class VaultClient:
         self._token_expires_at = None
         self._service_account_token = None
         self._token_expire_buffer_period_min = token_expire_buffer_period_min    # minutes
+        self._mount_point = mount_point
 
     def _read_service_account_token(self) -> None:
         with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as f:
@@ -74,32 +78,49 @@ class VaultClient:
                 self._read_service_account_token()
         auth_data = api.auth_methods.Kubernetes(
             adapter=self._client.adapter
-        ).login(role=self._role, jwt=self._service_account_token)["auth"]
+        ).login(role=self._role, jwt=self._service_account_token, mount_point=self._mount_point)["auth"]
         self._last_login_time = datetime.datetime.now(tz=datetime.timezone.utc)
         self._lease_duration = auth_data["lease_duration"]
         self._token_expires_at = self._last_login_time + datetime.timedelta(seconds=self._lease_duration)
         self._client.token = auth_data["client_token"]
 
     @_re_login_if_token_about_to_expire
-    def read_secret_version(self, path: str, version: Optional[int] = None, **kwargs) -> dict:
-        return self._client.secrets.kv.v2.read_secret_version(path, version, **kwargs)
+    def read_secret_version(self, path: str,
+                            version: Optional[int] = None,
+                            mount_point: Optional[str] = None,
+                            **kwargs) -> dict:
+        _mount_point = mount_point if mount_point else self._mount_point
+        return self._client.secrets.kv.v2.read_secret_version(path, version, mount_point=_mount_point, **kwargs)
 
     @_re_login_if_token_about_to_expire
-    def create_or_update_secrets(self, path: str, secrets: dict[str, str]) -> None:
-        self._client.secrets.kv.v2.create_or_update_secret(path=path, secret=secrets)
+    def create_or_update_secrets(self, path: str,
+                                 secrets: dict[str, str],
+                                 mount_point: Optional[str] = None,
+                                 **kwargs) -> None:
+        _mount_point = mount_point if mount_point else self._mount_point
+        self._client.secrets.kv.v2.create_or_update_secret(path=path,
+                                                           secret=secrets,
+                                                           mount_point=_mount_point,
+                                                           **kwargs)
 
     @_re_login_if_token_about_to_expire
-    def encrypt(self, encrypt_key: str, plaintext: str) -> str:
+    def encrypt(self, encrypt_key: str, plaintext: str, mount_point: Optional[str] = None) -> str:
+        _mount_point = mount_point if mount_point else self._mount_point
         try:
-            ciphertext = self._client.secrets.transit.encrypt_data(name=encrypt_key, plaintext=plaintext)
+            ciphertext = self._client.secrets.transit.encrypt_data(name=encrypt_key,
+                                                                   plaintext=plaintext,
+                                                                   mount_point=_mount_point)
         except Exception as e:
             raise VaultException(f"Failed to encrypt data: {e}", e)
         return ciphertext["data"]["ciphertext"]
 
     @_re_login_if_token_about_to_expire
-    def decrypt(self, decrypt_key: str, ciphertext: str) -> str:
+    def decrypt(self, decrypt_key: str, ciphertext: str, mount_point: Optional[str] = None) -> str:
+        _mount_point = mount_point if mount_point else self._mount_point
         try:
-            decrypt_data_response = self._client.secrets.transit.decrypt_data(name=decrypt_key, ciphertext=ciphertext)
+            decrypt_data_response = self._client.secrets.transit.decrypt_data(name=decrypt_key,
+                                                                              ciphertext=ciphertext,
+                                                                              mount_point=_mount_point)
         except Exception as e:
             raise VaultException(f"Failed to decrypt data: {e}", e)
         return decrypt_data_response["data"]["plaintext"]
