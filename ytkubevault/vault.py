@@ -43,6 +43,7 @@ def _re_login_if_token_about_to_expire(method):
         if self.token_is_about_to_expire():
             self.login()
         return method(self, *method_args, **method_kwargs)
+
     return _impl
 
 
@@ -57,7 +58,7 @@ class VaultClient:
         self._lease_duration = 0  # seconds
         self._token_expires_at = None
         self._service_account_token = None
-        self._token_expire_buffer_period_min = token_expire_buffer_period_min    # minutes
+        self._token_expire_buffer_period_min = token_expire_buffer_period_min  # minutes
         self._login_mount_point = login_mount_point
         self._secret_mount_point = secret_mount_point
         self._transit_mount_point = transit_mount_point
@@ -110,6 +111,17 @@ class VaultClient:
                                                            secret=secrets,
                                                            mount_point=_mount_point,
                                                            **kwargs)
+
+    @_re_login_if_token_about_to_expire
+    def patch(self, path: str,
+              secrets: dict[str, str],
+              mount_point: Optional[str] = None,
+              **kwargs) -> None:
+        _mount_point = mount_point if mount_point else self._secret_mount_point
+        self._client.secrets.kv.v2.patch(path=path,
+                                         secret=secrets,
+                                         mount_point=_mount_point,
+                                         **kwargs)
 
     @_re_login_if_token_about_to_expire
     def encrypt(self, encrypt_key: str, plaintext: str, mount_point: Optional[str] = None) -> str:
